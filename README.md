@@ -16,3 +16,7 @@ with a target test accuracy of at least 75%.
 - Git
 - DVC
 - DagsHub
+
+## Notes
+
+Project Angbeen(26L-9001) documentation is being updated.
