@@ -20,3 +20,8 @@ with a target test accuracy of at least 75%.
 ## Notes
 
 Project Angbeen(26L-9001) documentation is being updated.
+
+
+## Project Status
+
+Project 26L-9001 pipeline is under construction.
