@@ -17,7 +17,11 @@ def to_tensor(x, size):
 
 def normalize(x, mean, std):
     # NORMALIZATION STEP (Part E edits this line differently on two branches)
+<<<<<<< HEAD
     return x * 1.5 - 0.5
+=======
+    return (x - 0.5) / 0.5
+>>>>>>> teammate-sim
 
 
 def main():
