@@ -1,187 +1,68 @@
-from pathlib import Path
+"""Stage 3: train the CNN, save models/model.pth and models/history.csv."""
+import os
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import yaml
-from torch.utils.data import DataLoader, TensorDataset
+
+from model import build_model
 
 
-def read_parameters():
-    with open("params.yaml", "r") as file:
-        return yaml.safe_load(file)["train"]
+def load(split):
+    x = torch.from_numpy(np.load(f"data/processed/{split}_x.npy")).float()
+    y = torch.from_numpy(np.load(f"data/processed/{split}_y.npy")).long()
+    return x, y
 
 
-class CifarCNN(nn.Module):
-    def __init__(self, filters, dropout):
-        super().__init__()
-
-        self.features = nn.Sequential(
-            nn.Conv2d(3, filters, kernel_size=3, padding=1),
-            nn.BatchNorm2d(filters),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(filters, filters * 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2)
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(filters * 2 * 8 * 8, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(128, 10)
-        )
-
-    def forward(self, images):
-        images = self.features(images)
-        return self.classifier(images)
-
-
-def load_data():
-    train_data = torch.load(
-        "data/processed/train.pt",
-        weights_only=False
-    )
-
-    validation_data = torch.load(
-        "data/processed/val.pt",
-        weights_only=False
-    )
-
-    train_dataset = TensorDataset(
-        train_data["images"],
-        train_data["labels"]
-    )
-
-    validation_dataset = TensorDataset(
-        validation_data["images"],
-        validation_data["labels"]
-    )
-
-    return train_dataset, validation_dataset
+def run_epoch(model, x, y, loss_fn, dev, bs, opt=None, flip=False):
+    training = opt is not None
+    model.train(training)
+    idx = torch.randperm(len(x)) if training else torch.arange(len(x))
+    total_loss, correct = 0.0, 0
+    with torch.set_grad_enabled(training):
+        for i in range(0, len(x), bs):
+            b = idx[i:i + bs]
+            xb, yb = x[b].to(dev), y[b].to(dev)
+            if training and flip:
+                 mask = torch.rand(len(xb), device=dev) < 0.5
+                 xb[mask] = xb[mask].flip(3)
+            out = model(xb)
+            loss = loss_fn(out, yb)
+            if training:
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+            total_loss += loss.item() * len(b)
+            correct += (out.argmax(1) == yb).sum().item()
+    return total_loss / len(x), correct / len(x)
 
 
 def main():
-    settings = read_parameters()
+    params = yaml.safe_load(open("params.yaml"))
+    torch.set_num_threads(min(8, os.cpu_count() or 4))
+    torch.set_num_interop_threads(1)
+    p, size = params["train"], params["preprocess"]["image_size"]
+    torch.manual_seed(p["seed"])
+    dev = "cpu"
 
-    filters = settings["num_filters"]
-    dropout = settings["dropout_rate"]
-    learning_rate = settings["learning_rate"]
-    epochs = settings["epochs"]
-    batch_size = settings["batch_size"]
+    xtr, ytr = load("train")
+    xva, yva = load("val")
+    model = build_model(p["num_filters"], p["dropout_rate"], p["dense_units"], size).to(dev)
+    opt = torch.optim.Adam(model.parameters(), lr=p["learning_rate"])
+    loss_fn = nn.CrossEntropyLoss()
 
-    train_dataset, validation_dataset = load_data()
+    rows = []
+    for ep in range(1, p["epochs"] + 1):
+        tl, ta = run_epoch(model, xtr, ytr, loss_fn, dev, p["batch_size"], opt, p["augment_flip"])
+        vl, va = run_epoch(model, xva, yva, loss_fn, dev, p["batch_size"])
+        rows.append(dict(epoch=ep, train_loss=tl, train_acc=ta, val_loss=vl, val_acc=va))
+        print(f"epoch {ep:02d} | train {tl:.3f}/{ta:.3f} | val {vl:.3f}/{va:.3f}")
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True
-    )
-
-    validation_loader = DataLoader(
-        validation_dataset,
-        batch_size=batch_size,
-        shuffle=False
-    )
-
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
-
-    model = CifarCNN(filters, dropout).to(device)
-
-    loss_function = nn.CrossEntropyLoss()
-
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=learning_rate
-    )
-
-    history = []
-
-    for epoch in range(epochs):
-        model.train()
-
-        total_loss = 0
-        correct = 0
-        total = 0
-
-        for images, labels in train_loader:
-            images = images.to(device)
-            labels = labels.to(device)
-
-            optimizer.zero_grad()
-
-            predictions = model(images)
-            loss = loss_function(predictions, labels)
-
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-            predicted_labels = predictions.argmax(dim=1)
-
-            correct += (predicted_labels == labels).sum().item()
-            total += labels.size(0)
-
-        train_loss = total_loss / len(train_loader)
-        train_accuracy = correct / total
-
-        model.eval()
-
-        validation_correct = 0
-        validation_total = 0
-
-        with torch.no_grad():
-            for images, labels in validation_loader:
-                images = images.to(device)
-                labels = labels.to(device)
-
-                predictions = model(images)
-                predicted_labels = predictions.argmax(dim=1)
-
-                validation_correct += (
-                    predicted_labels == labels
-                ).sum().item()
-
-                validation_total += labels.size(0)
-
-        validation_accuracy = (
-            validation_correct / validation_total
-        )
-
-        history.append({
-            "epoch": epoch + 1,
-            "train_loss": train_loss,
-            "train_accuracy": train_accuracy,
-            "validation_accuracy": validation_accuracy
-        })
-
-        print(
-            f"Epoch {epoch + 1}/{epochs} - "
-            f"Loss: {train_loss:.4f} - "
-            f"Train Accuracy: {train_accuracy:.4f} - "
-            f"Validation Accuracy: {validation_accuracy:.4f}"
-        )
-
-    Path("models").mkdir(parents=True, exist_ok=True)
-
-    torch.save(
-        model.state_dict(),
-        "models/model.pth"
-    )
-
-    pd.DataFrame(history).to_csv(
-        "models/history.csv",
-        index=False
-    )
-
-    print("\nTraining has been completed successfully.")
-    print("Model has beensaved to models/model.pth")
-    print("History has been saved to models/history.csv")
+    os.makedirs("models", exist_ok=True)
+    torch.save(model.state_dict(), "models/model.pth")
+    pd.DataFrame(rows).to_csv("models/history.csv", index=False)
 
 
 if __name__ == "__main__":

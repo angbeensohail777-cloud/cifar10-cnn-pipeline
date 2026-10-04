@@ -1,151 +1,61 @@
-from pathlib import Path
+"""Stage 4: test metrics -> metrics.json, confusion matrix -> plots/."""
 import json
+import os
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import yaml
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import confusion_matrix
 
+from model import build_model
 
-class CifarCNN(nn.Module):
-    def __init__(self, filters, dropout):
-        super().__init__()
-
-        self.features = nn.Sequential(
-            nn.Conv2d(3, filters, 3, padding=1),
-            nn.BatchNorm2d(filters),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(filters, filters * 2, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2)
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(filters * 2 * 8 * 8, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(128, 10)
-        )
-
-    def forward(self, images):
-        images = self.features(images)
-        return self.classifier(images)
-
-
-def load_settings():
-    with open("params.yaml", "r") as file:
-        return yaml.safe_load(file)
+CLASSES = ["airplane", "automobile", "bird", "cat", "deer",
+           "dog", "frog", "horse", "ship", "truck"]
 
 
 def main():
-    settings = load_settings()["train"]
+    params = yaml.safe_load(open("params.yaml"))
+    p, size = params["train"], params["preprocess"]["image_size"]
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
 
-    filters = settings["num_filters"]
-    dropout = settings["dropout_rate"]
-    batch_size = settings["batch_size"]
+    x = torch.from_numpy(np.load("data/processed/test_x.npy")).float()
+    y = torch.from_numpy(np.load("data/processed/test_y.npy")).long()
 
-    test_data = torch.load(
-        "data/processed/test.pt",
-        weights_only=False
-    )
-
-    test_dataset = TensorDataset(
-        test_data["images"],
-        test_data["labels"]
-    )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False
-    )
-
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
-
-    model = CifarCNN(filters, dropout).to(device)
-
-    model.load_state_dict(
-        torch.load(
-            "models/model.pth",
-            map_location=device,
-            weights_only=True
-        )
-    )
-
+    model = build_model(p["num_filters"], p["dropout_rate"], p["dense_units"], size).to(dev)
+    model.load_state_dict(torch.load("models/model.pth", map_location=dev))
     model.eval()
 
-    loss_function = nn.CrossEntropyLoss()
-
-    total_loss = 0
-    correct = 0
-    total = 0
-
-    actual_labels = []
-    predicted_labels = []
-
+    loss_fn = nn.CrossEntropyLoss(reduction="sum")
+    total_loss, preds = 0.0, []
     with torch.no_grad():
-        for images, labels in test_loader:
-            images = images.to(device)
-            labels = labels.to(device)
+        for i in range(0, len(x), 500):
+            xb, yb = x[i:i + 500].to(dev), y[i:i + 500].to(dev)
+            out = model(xb)
+            total_loss += loss_fn(out, yb).item()
+            preds.append(out.argmax(1).cpu())
+    preds = torch.cat(preds).numpy()
+    acc = float((preds == y.numpy()).mean())
 
-            outputs = model(images)
-            loss = loss_function(outputs, labels)
+    with open("metrics.json", "w") as f:
+        json.dump({"test_loss": total_loss / len(x), "test_accuracy": acc}, f, indent=2)
 
-            total_loss += loss.item()
-
-            predictions = outputs.argmax(dim=1)
-
-            correct += (predictions == labels).sum().item()
-            total += labels.size(0)
-
-            actual_labels.extend(labels.cpu().tolist())
-            predicted_labels.extend(predictions.cpu().tolist())
-
-    test_loss = total_loss / len(test_loader)
-    test_accuracy = correct / total
-
-    matrix = confusion_matrix(
-        actual_labels,
-        predicted_labels
-    )
-
-    display = ConfusionMatrixDisplay(
-        confusion_matrix=matrix
-    )
-
-    display.plot()
-    plt.title("CIFAR-10 Confusion Matrix")
-    plt.tight_layout()
-
-    Path("models").mkdir(parents=True, exist_ok=True)
-
-    plt.savefig(
-        "models/confusion_matrix.png",
-        dpi=150
-    )
-
-    plt.close()
-
-    results = {
-        "test_loss": test_loss,
-        "test_accuracy": test_accuracy
-    }
-
-    with open("metrics.json", "w") as file:
-        json.dump(results, file, indent=4)
-
-    print("Evaluation has been completed.")
-    print(f"Test loss is: {test_loss:.4f}")
-    print(f"Test accuracy is: {test_accuracy:.4f}")
-    print("Confusion matrix saved to models/confusion_matrix.png")
-    print("Metrics saved to metrics.json")
+    cm = confusion_matrix(y.numpy(), preds)
+    os.makedirs("plots", exist_ok=True)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    ax.imshow(cm, cmap="Blues")
+    ax.set_xticks(range(10)); ax.set_xticklabels(CLASSES, rotation=45, ha="right")
+    ax.set_yticks(range(10)); ax.set_yticklabels(CLASSES)
+    for i in range(10):
+        for j in range(10):
+            ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=7)
+    ax.set_xlabel("Predicted"); ax.set_ylabel("True"); ax.set_title(f"Confusion Matrix (acc={acc:.3f})")
+    fig.tight_layout()
+    fig.savefig("plots/confusion_matrix.png", dpi=120)
+    print(f"test_accuracy={acc:.4f}")
 
 
 if __name__ == "__main__":

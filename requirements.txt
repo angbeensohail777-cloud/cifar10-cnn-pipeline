@@ -1,0 +1,10 @@
+torch
+torchvision
+numpy
+pandas
+scikit-learn
+matplotlib
+pyyaml
+dvc
+dvc[s3]
+dagshub

@@ -1,7 +1,10 @@
 venv/
+.venv/
 __pycache__/
-.dvc/cache/
+*.pyc
+.ipynb_checkpoints/
+.dvc/cache
+.dvc/tmp
+.dvc/config.local
 *.pth
 *.h5
-.env
-/models

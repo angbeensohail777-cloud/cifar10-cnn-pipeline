@@ -1,89 +1,48 @@
-from pathlib import Path
+"""Stage 2: normalize, split train/val, save tensors to data/processed/."""
+import os
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 import yaml
 from sklearn.model_selection import train_test_split
 
 
-def load_settings():
-    with open("params.yaml", "r") as file:
-        return yaml.safe_load(file)
+def to_tensor(x, size):
+    x = torch.from_numpy(x).permute(0, 3, 1, 2).float() / 255.0  # NHWC -> NCHW, [0,1]
+    if size != 32:
+        x = F.interpolate(x, size=(size, size), mode="bilinear", align_corners=False)
+    return x
 
 
-def standardize(images):
-    channel_mean = torch.tensor([0.4914, 0.4822, 0.4465])
-    channel_std = torch.tensor([0.2023, 0.1994, 0.2010])
-
-    channel_mean = channel_mean.reshape(1, 3, 1, 1)
-    channel_std = channel_std.reshape(1, 3, 1, 1)
-
-    images = images.float() / 255.0
-    images = images.permute(0, 3, 1, 2)
-
-    return (images - channel_mean) / channel_std
+def normalize(x, mean, std):
+    # NORMALIZATION STEP (Part E edits this line differently on two branches)
+    return (x - mean) / std
 
 
 def main():
-    settings = load_settings()["preprocess"]
+    p = yaml.safe_load(open("params.yaml"))["preprocess"]
+    os.makedirs("data/processed", exist_ok=True)
 
-    validation_ratio = settings["val_size"]
-    random_seed = settings["seed"]
+    x = np.load("data/raw/train_x.npy")
+    y = np.load("data/raw/train_y.npy")
+    xte = np.load("data/raw/test_x.npy")
+    yte = np.load("data/raw/test_y.npy")
 
-    raw_path = Path("data/raw")
-    output_path = Path("data/processed")
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    train_set = torch.load(
-        raw_path / "train.pt",
-        weights_only=False
+    xtr, xva, ytr, yva = train_test_split(
+        x, y, test_size=p["val_size"], random_state=p["seed"], stratify=y
     )
+    xtr, xva, xte = (to_tensor(a, p["image_size"]) for a in (xtr, xva, xte))
 
-    test_set = torch.load(
-        raw_path / "test.pt",
-        weights_only=False
-    )
+    # statistics from the training split only (no leakage)
+    mean = xtr.mean(dim=(0, 2, 3), keepdim=True)
+    std = xtr.std(dim=(0, 2, 3), keepdim=True)
 
-    images = standardize(train_set["images"])
-    labels = train_set["labels"]
-
-    test_images = standardize(test_set["images"])
-    test_labels = test_set["labels"]
-
-    all_indices = list(range(len(labels)))
-
-    train_indices, validation_indices = train_test_split(
-        all_indices,
-        test_size=validation_ratio,
-        random_state=random_seed,
-        stratify=labels.numpy()
-    )
-
-    train_indices = torch.tensor(train_indices)
-    validation_indices = torch.tensor(validation_indices)
-
-    processed_train = {
-        "images": images[train_indices],
-        "labels": labels[train_indices]
-    }
-
-    processed_validation = {
-        "images": images[validation_indices],
-        "labels": labels[validation_indices]
-    }
-
-    processed_test = {
-        "images": test_images,
-        "labels": test_labels
-    }
-
-    torch.save(processed_train, output_path / "train.pt")
-    torch.save(processed_validation, output_path / "val.pt")
-    torch.save(processed_test, output_path / "test.pt")
-
-    print("Preprocessing has been completed.")
-    print("Training samples are:", len(train_indices))
-    print("Validation samples are:", len(validation_indices))
-    print("Test samples are:", len(test_labels))
+    for name, t, lab in (("train", xtr, ytr), ("val", xva, yva), ("test", xte, yte)):
+        arr = normalize(t, mean, std).numpy().astype(np.float16)  # float16 = half the size
+        np.save(f"data/processed/{name}_x.npy", arr)
+        np.save(f"data/processed/{name}_y.npy", lab)
+        print(f"{name}: {arr.shape}")
 
 
 if __name__ == "__main__":
