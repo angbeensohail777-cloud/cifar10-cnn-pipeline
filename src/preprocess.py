@@ -17,7 +17,7 @@ def to_tensor(x, size):
 
 def normalize(x, mean, std):
     # NORMALIZATION STEP (Part E edits this line differently on two branches)
-    return (x - mean) / std
+    return (x - 0.5) / 0.5
 
 
 def main():
