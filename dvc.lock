@@ -41,9 +41,9 @@ stages:
     deps:
     - path: data/processed
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: 2122531589130c265df561511dd5b7a4.dir
+      size: 369120768
+      nfiles: 6
     - path: src/model.py
       hash: md5
       md5: 9e7553277b136e57ec800b89c2111d17
