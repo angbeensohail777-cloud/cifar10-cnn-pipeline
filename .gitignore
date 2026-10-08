@@ -8,3 +8,4 @@ __pycache__/
 .dvc/config.local
 *.pth
 *.h5
+data/
